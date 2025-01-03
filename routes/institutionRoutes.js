@@ -59,6 +59,8 @@ router.get('/profile', validToken, isAccepted(role), isEnabled(role), getRoleFro
                 month: getMonthAsText(event.event_start),
                 day: getDay(event.event_start),
                 time: getFormatTime(event.event_start,event.event_end),
+                start:event.event_start,
+                end:event.event_end,
                 links: eventLinks.map(link => ({
                     link_id: link.event_link_id,
                     title: link.title,
@@ -110,6 +112,26 @@ router.get('/profile', validToken, isAccepted(role), isEnabled(role), getRoleFro
             data: null
         });
     }
+});
+
+router.get('/enabled', validToken, isEnabled(role), getRoleFromToken, verifyRole(role), async (req, res)=>{
+    // #swagger.tags = ['institution']
+    res.status(200).json({
+        code: 200,
+        message: "A fiók enedéléyezve van",
+        errors: [],
+        data: null,
+    });
+});
+
+router.get('/accepted', validToken, isAccepted(role), getRoleFromToken, verifyRole(role), async (req, res)=>{
+    // #swagger.tags = ['institution']
+    res.status(200).json({
+        code: 200,
+        message: "A fiók jóváhagyásra került",
+        errors: [],
+        data: null,
+    });
 });
 
 // hírfolyamon posztot/bejegyzést/hírt hoz létre, ha nincs kép nem fog defaultot bele helyezni a bejegyzésbe
@@ -176,10 +198,15 @@ router.put('/news/:news_id', validToken, isAccepted(role), isEnabled(role), getR
         const old_banner_image=old.banner_image;
         console.log(old_banner_image);
         
-        
         // új bejegyzés készítése
         await pool.query('UPDATE news SET description = ?, banner_image = ? WHERE news_id = ? ', [description, banner_image,news_id]);
         
+        // ha nem null értékű az régi kép, akk azt töröljük
+        if(old_banner_image){
+            const filePath = path.join(__dirname, '..','uploads', old_banner_image);
+            await fs.unlink(filePath);
+        }
+
         // lekérjük az eddigi bejegyzéseit a felhasználónak
         const [rawNews]=await pool.query(
             `SELECT n.news_id, n.description, (SELECT COUNT(*) FROM likes as l WHERE l.news_id=n.news_id) as likes, n.timestamp, n.banner_image FROM news as n WHERE n.institution_id=? ORDER BY n.news_id DESC`, 
@@ -193,14 +220,6 @@ router.put('/news/:news_id', validToken, isAccepted(role), isEnabled(role), getR
             formatted_datetime: dynamicsDateTime(news.timestamp),
             banner_image: news.banner_image,
         }));
-
-        // ha nem null értékű az régi kép, akk azt töröljük
-        if(old_banner_image!==null && old_banner_image!=="default_banner.jpg"){
-            const filePath = path.join(__dirname, '..','uploads', old_banner_image);
-            console.log(filePath);
-            
-            await fs.unlink(filePath);
-        }
 
         res.status(200).json({
             code: 200,
@@ -236,6 +255,7 @@ router.delete('/news/:news_id', validToken, isAccepted(role), isEnabled(role), g
         // kép nevének lekérése
         const [[{banner_image}]]=await pool.query('SELECT banner_image FROM news WHERE news_id = ? AND institution_id = ?', [news_id, institution_id]);
         
+
         // töröljük a bejegyzést //affectedRows
         const [{affectedRows}]= await pool.query('DELETE FROM news WHERE news_id = ? AND institution_id = ?', [news_id, institution_id]);
         if(!affectedRows){
@@ -257,7 +277,7 @@ router.delete('/news/:news_id', validToken, isAccepted(role), isEnabled(role), g
         }));
 
         // tötöljük a képet, ha volt.
-        if(banner_image!==null && old_banner_image!=="default_banner.jpg"){
+        if(banner_image){
             const filePath = path.join(__dirname,  '..', 'uploads', banner_image);
             await fs.unlink(filePath);
         }
@@ -282,17 +302,20 @@ router.delete('/news/:news_id', validToken, isAccepted(role), isEnabled(role), g
 
 // új eseményt hoz létre
 // csak egy éven belüli esemény lehet
+// TRANZAKCIÓKEZELÉS MINT A PUTOSNÁL!!
 router.post('/event', validToken, isAccepted(role), isEnabled(role), getRoleFromToken, verifyRole(role), upload.single('banner_image'), multerErrorHandler, async (req, res)=>{
     // #swagger.tags = ['institution']
     const user_id=req.user_id;
     const {event_start, event_end, title, location, description}=req.body;
-    // const links=req.body;
+    //const links=req.body.links;
     // tesztelés miatt!
+    
+    
     let links = [];
     if (req.body.links) {
         links = Array.isArray(req.body.links)
             ? req.body.links.map(link => typeof link === 'string' ? JSON.parse(link) : link)
-            : [JSON.parse(req.body.links)];
+            : JSON.parse(req.body.links);
     }
 
     const banner_image = req.file ? req.file.filename : null;
@@ -301,14 +324,21 @@ router.post('/event', validToken, isAccepted(role), isEnabled(role), getRoleFrom
     try {
         // institution id kikeresése
         const [[{institution_id}]]=await pool.query('SELECT institution_id FROM institutions WHERE user_id=?', [user_id]);
+        const [[profile]]=await pool.query('SELECT banner_image FROM institutions WHERE user_id=?', [user_id]);
         // új esemény készítése
         const [{insertId}] = await pool.query('INSERT INTO events (event_start, event_end, title, location, description, institution_id, banner_image) VALUES (?, ?, ?, ?, ?, ?, ?)', 
             [event_start, event_end, title, location, description,  institution_id, banner_image]
         );
         // Az adatok előkészítése a bulk inserthez
-        const values = links.map(item => [insertId, item.title, item.link]);
-        const sql = 'INSERT INTO event_links (event_id,title, link) VALUES ?';
-        await pool.query(sql, [values]);
+        console.log(`links: ${links}`);
+        
+        if(links.length>0){
+            const values = links.map(item => [insertId, item.title, item.link]);
+            console.log(values);
+            const sql = 'INSERT INTO event_links (event_id,title, link) VALUES ?';
+            await pool.query(sql, [values]);
+        }
+        
 
         // Események lekérdezése
         const [rawEvents] = await pool.query(`SELECT * FROM events WHERE institution_id = ? ORDER BY event_start ASC`, [institution_id]);
@@ -330,6 +360,8 @@ router.post('/event', validToken, isAccepted(role), isEnabled(role), getRoleFrom
                 month: getMonthAsText(event.event_start),
                 day: getDay(event.event_start),
                 time: getFormatTime(event.event_start,event.event_end),
+                start:event.event_start,
+                end:event.event_end,
                 links: eventLinks.map(link => ({
                     link_id: link.event_link_id,
                     title: link.title,
@@ -357,7 +389,7 @@ router.post('/event', validToken, isAccepted(role), isEnabled(role), getRoleFrom
 });
 
 // meglévő eseményt módosít
-router.put('/event/:event_id', isAccepted(role), isEnabled(role), validToken, getRoleFromToken, verifyRole(role),upload.single('banner_image'), multerErrorHandler,  async (req, res)=>{
+router.put('/event/:event_id',validToken, isAccepted(role), isEnabled(role), getRoleFromToken, verifyRole(role),upload.single('banner_image'), multerErrorHandler,  async (req, res)=>{
     // #swagger.tags = ['institution']
     const connection = await pool.getConnection();
     const event_id = req.params.event_id;
@@ -369,7 +401,7 @@ router.put('/event/:event_id', isAccepted(role), isEnabled(role), validToken, ge
     if (req.body.links) {
         links = Array.isArray(req.body.links)
             ? req.body.links.map(link => typeof link === 'string' ? JSON.parse(link) : link)
-            : [JSON.parse(req.body.links)];
+            : JSON.parse(req.body.links);
     }
 
     const banner_image = req.file ? req.file.filename : null;
@@ -378,10 +410,6 @@ router.put('/event/:event_id', isAccepted(role), isEnabled(role), validToken, ge
     try {
         if(!event_id || isNaN(event_id)){
             throw new Error('érvénytelen bemeneti adat');
-        }
-
-        if(banner_image===null){
-            throw new Error('Kötelező képet megadni');
         }
 
         // institution id kikeresése
@@ -404,18 +432,18 @@ router.put('/event/:event_id', isAccepted(role), isEnabled(role), validToken, ge
         await connection.query('DELETE FROM event_links WHERE event_id = ?', [event_id]);
 
         // Az adatok előkészítése a bulk inserthez
-        const values = links.map(item => [event_id, item.title, item.link]);
-        const sql = 'INSERT INTO event_links (event_id,title, link) VALUES ?';
-        await connection.query(sql, [values]);
+        if(links.length>0){
+            const values = links.map(item => [event_id, item.title, item.link]);
+            const sql = 'INSERT INTO event_links (event_id,title, link) VALUES ?';
+            await connection.query(sql, [values]);
+        }
 
         // Tranzakció befejezése ----------------------------------------------
         await connection.commit();
 
         // ha nem null értékű az régi kép, akk azt töröljük
-        if(old_banner_image!==null && old_banner_image!=="default_banner.jpg"){
+        if(old_banner_image){
             const filePath = path.join(__dirname, '..','uploads', old_banner_image);
-            console.log(filePath);
-            
             await fs.unlink(filePath);
         }
 
@@ -439,6 +467,8 @@ router.put('/event/:event_id', isAccepted(role), isEnabled(role), validToken, ge
                 month: getMonthAsText(event.event_start),
                 day: getDay(event.event_start),
                 time: getFormatTime(event.event_start,event.event_end),
+                start:event.event_start,
+                end:event.event_end,
                 links: eventLinks.map(link => ({
                     link_id: link.event_link_id,
                     title: link.title,
@@ -483,8 +513,7 @@ router.delete('/event/:event_id', validToken, isAccepted(role), isEnabled(role),
         
         // kép nevének lekérése
         const [[old]]=await pool.query('SELECT banner_image FROM events WHERE event_id = ? AND institution_id = ?', [event_id, institution_id]);
-        const old_banner_image=old.banner_image;
-        console.log(old_banner_image);
+        console.log(old.banner_image);
 
         // esemény törlése
         const [{affectedRows}]= await pool.query('DELETE FROM events WHERE event_id = ? AND institution_id = ?', [event_id, institution_id]);
@@ -493,10 +522,8 @@ router.delete('/event/:event_id', validToken, isAccepted(role), isEnabled(role),
         }
 
         // ha nem null értékű az régi kép, akk azt töröljük
-        if(old_banner_image!==null && old_banner_image!=="default_banner.jpg"){
-            const filePath = path.join(__dirname, '..','uploads', old_banner_image);
-            console.log(filePath);
-            
+        if(old.banner_image){
+            const filePath = path.join(__dirname, '..','uploads', old.banner_image);
             await fs.unlink(filePath);
         }
 
@@ -520,6 +547,8 @@ router.delete('/event/:event_id', validToken, isAccepted(role), isEnabled(role),
                 month: getMonthAsText(event.event_start),
                 day: getDay(event.event_start),
                 time: getFormatTime(event.event_start,event.event_end),
+                start:event.event_start,
+                end:event.event_end,
                 links: eventLinks.map(link => ({
                     link_id: link.event_link_id,
                     title: link.title,
@@ -649,7 +678,7 @@ router.put('/avatar', validToken, isAccepted(role), isEnabled(role), getRoleFrom
         await pool.query('UPDATE institutions SET avatar_image = ? WHERE user_id = ?', [avatar_image, user_id]);
 
         // ha nem null értékű az régi kép, akk azt töröljük
-        if(old_avatar_image!==null && old_avatar_image!=="default_avatar.jpg"){
+        if(old_avatar_image && old_avatar_image!=="default_avatar.jpg"){
             const filePath = path.join(__dirname, '..','uploads', old_avatar_image);
             await fs.unlink(filePath);
         }
@@ -684,6 +713,8 @@ router.put('/banner', validToken, isAccepted(role), isEnabled(role), getRoleFrom
     // #swagger.tags = ['institution']
     const user_id=req.user_id;
     const banner_image = req.file ? req.file.filename : null;
+    console.log(banner_image);
+    
     try {
 
         if(banner_image===null){
@@ -699,7 +730,7 @@ router.put('/banner', validToken, isAccepted(role), isEnabled(role), getRoleFrom
         await pool.query('UPDATE institutions SET banner_image = ? WHERE user_id = ?', [banner_image, user_id]);
 
         // ha nem null értékű az régi kép, akk azt töröljük
-        if(old_banner_image!==null && old_banner_image!=="default_banner.jpg"){
+        if(old_banner_image && old_banner_image!=="default_banner.jpg"){
             const filePath = path.join(__dirname, '..','uploads', old_banner_image);
             await fs.unlink(filePath);
         }
@@ -875,8 +906,40 @@ router.post('/public/email', validToken, isAccepted(role), isEnabled(role), getR
     }
 });
 
+router.put('/description', validToken,  isAccepted(role), isEnabled(role), getRoleFromToken, verifyRole(role), async (req, res)=>{
+    const {description}=req.body;
+    const user_id=req.user_id;
+    try {
+        // név módosítása
+        if(!description){
+            throw new Error('érvénytelen bemeneti adat');
+        }
+
+        await pool.query('UPDATE institutions SET description = ? WHERE user_id = ?', [description, user_id]);
+        const [[response]]=await pool.query('SELECT description FROM institutions WHERE user_id = ?', [user_id]);
+        res.status(200).json({
+            code: 200,
+            message: "sikeres adatmódosítás",
+            errors: [],
+            data: {
+                description: response.description
+            }
+        });
+
+
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({
+            code: 500,
+            message: error.message|| "Szerverhiba",
+            errors: [],
+            data: null
+        });
+    }
+});
+
 // töröl egy már létező elérhetőséget (email),  visszaadja a megmaradt emaileket
-router.delete('/public/email/:email_id', isAccepted(role), isEnabled(role), validToken, getRoleFromToken, verifyRole(role), async (req, res)=>{
+router.delete('/public/email/:email_id', validToken, isAccepted(role), isEnabled(role), getRoleFromToken, verifyRole(role), async (req, res)=>{
     // #swagger.tags = ['institution']
     try {
         const user_id=req.user_id;
@@ -915,7 +978,7 @@ router.delete('/public/email/:email_id', isAccepted(role), isEnabled(role), vali
 });
 
 // módosít egy már létező elérhetőséget (email)
-router.put('/public/email/:email_id', isAccepted(role), isEnabled(role), validToken, getRoleFromToken, verifyRole(role), async (req, res)=>{
+router.put('/public/email/:email_id', validToken, isAccepted(role), isEnabled(role), getRoleFromToken, verifyRole(role), async (req, res)=>{
     // #swagger.tags = ['institution']
     try {
         const user_id=req.user_id;
@@ -1181,7 +1244,47 @@ router.delete('/profile', validToken, isAccepted(role), isEnabled(role), getRole
     // #swagger.tags = ['institution']
     try {
         const user_id=req.user_id;
+        // 1. Képek összegyűjtése a lekérdezésekből
+        const [avatarImages] = await pool.query(
+            `SELECT i.avatar_image FROM institutions as i WHERE i.user_id = ? AND i.avatar_image <> "default_avatar.jpg"`, [user_id]
+        );
+
+        const [bannerImages] = await pool.query(
+            `SELECT i.banner_image FROM institutions as i WHERE i.user_id = ? AND i.banner_image <> "default_banner.jpg"`, [user_id]
+        );
+
+        const [newsImages] = await pool.query(
+            `SELECT n.banner_image FROM institutions as i JOIN news as n USING(institution_id) WHERE i.user_id = ? AND n.banner_image IS NOT NULL`, [user_id]
+        );
+
+        const [eventImages] = await pool.query(
+            `SELECT e.banner_image FROM institutions as i JOIN events as e USING(institution_id) WHERE i.user_id = ? AND e.banner_image IS NOT NULL`, [user_id]
+        );
+
+        // 2. Képek tömbjének összeállítása
+        const allImages = [
+            ...avatarImages.map(row => row.avatar_image),
+            ...bannerImages.map(row => row.banner_image),
+            ...newsImages.map(row => row.banner_image),
+            ...eventImages.map(row => row.banner_image)
+        ];
+
+        // 3. Duplikátumok eltávolítása
+        const uniqueImages = [...new Set(allImages)];
+
         await pool.query(`DELETE FROM users WHERE user_id = ?`, [user_id]);
+
+        // 4. Képek törlése
+        for (const image of uniqueImages) {
+            const filePath = path.join(__dirname, '..', 'uploads', image);
+            try {
+                await fs.unlink(filePath); // Fájl törlése
+                console.log(`Törölve: ${filePath}`);
+            } catch (err) {
+                console.error(`Nem sikerült törölni: ${filePath} - Hiba: ${err.message}`);
+            }
+        }
+
         res.status(200).json({
             code: 200,
             message: "Sikeres fióktörlés",
@@ -1426,7 +1529,7 @@ router.get('/messaging_rooms/:messaging_room_id', validToken, isAccepted(role), 
             message: "Sikeres adatlekérés",
             errors: [],
             data: {
-                messaging_room_id: messaging_room_id,
+                messaging_room_id: parseInt(messaging_room_id),
                 person: person,
                 messages: messages,
             }

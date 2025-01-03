@@ -7,12 +7,14 @@ const uploadDir = 'uploads/';
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
+        console.log('Kapott fájl:', file);
         if (!fs.existsSync(uploadDir)) {
             fs.mkdirSync(uploadDir);
         }
         cb(null, uploadDir);
     },
     filename: (req, file, cb) => {
+        console.log('Kapott fájl:', file);
         const ext = path.extname(file.originalname);
         cb(null, `${uuidv4()}-${file.originalname}`);
     }
@@ -22,6 +24,7 @@ const upload = multer({
     storage: storage,
     limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
     fileFilter: function (req, file, cb) {
+        console.log('Kapott fájl:', file);
         const filetypes = /jpeg|jpg|png|gif|webp|avif/;
         const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
         const mimetype = filetypes.test(file.mimetype);

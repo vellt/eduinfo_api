@@ -25,10 +25,10 @@ router.get(
     // #swagger.tags = ['admin']
     try {
       const [institutions] = await pool.query(
-        "SELECT institution_id, is_enabled, is_accepted, avatar_image, name, email FROM institutions JOIN users USING(user_id)"
+        "SELECT institution_id, is_enabled, is_accepted, avatar_image, name, email FROM institutions JOIN users USING(user_id) ORDER BY institution_id DESC"
       );
       const [person] = await pool.query(
-        "SELECT person_id, is_enabled, is_accepted, avatar_image, name, email FROM person JOIN users USING(user_id)"
+        "SELECT person_id, is_enabled, is_accepted, avatar_image, name, email FROM person JOIN users USING(user_id) ORDER BY person_id DESC"
       );
       console.log(person);
 
@@ -339,5 +339,7 @@ router.get("/institution/:institution_id", async (req, res) => {
         });
     }
 });
+
+
 
 module.exports = router;

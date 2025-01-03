@@ -32,7 +32,7 @@ router.get('/home', validToken, isAccepted(role), isEnabled(role), getRoleFromTo
         // A követett intézmények eseményeinek lekérdezése
         if(institutionIds.length){
             // akkor sincs gond, ha 3 alatti mennyiségű esemény van
-            const [rawEvents] = await pool.query(`SELECT * FROM events WHERE institution_id IN (?) ORDER BY event_start ASC LIMIT 3`, [institutionIds]);
+            const [rawEvents] = await pool.query(`SELECT e.event_id, e.event_start, e.event_end, e.title, e.location, e.description, e.institution_id, e.banner_image as cover_image, i.institution_id, i.avatar_image, i.banner_image FROM events as e JOIN institutions as i USING(institution_id) JOIN users as u USING(user_id)  WHERE e.institution_id IN (?) ORDER BY e.event_start ASC LIMIT 3`, [institutionIds]);
         
             for (const event of rawEvents) {
                 // Egy eseményhez tartozó linkek lekérdezése
@@ -44,15 +44,22 @@ router.get('/home', validToken, isAccepted(role), isEnabled(role), getRoleFromTo
                     title: event.title,
                     location: event.location,
                     description: event.description,
-                    banner_image: event.banner_image,
+                    banner_image: event.cover_image,
                     month: getMonthAsText(event.event_start),
                     day: getDay(event.event_start),
                     time: getFormatTime(event.event_start, event.event_end),
+                    start:event.event_start,
+                    end:event.event_end,
                     links: eventLinks.map(link => ({
                         link_id: link.event_link_id,
                         title: link.title,
                         link: link.link
-                    }))
+                    })),
+                    institution:{
+                        institution_id: event.institution_id,
+                        avatar_image: event.avatar_image,
+                        banner_image: event.banner_image,
+                    }
                 });
             }
 
@@ -63,7 +70,7 @@ router.get('/home', validToken, isAccepted(role), isEnabled(role), getRoleFromTo
         // a követett intézmények bejegyzései
         if(institutionIds.length){
             const [rawNews]=await pool.query(
-                `SELECT n.news_id, n.description, (SELECT COUNT(*) FROM likes as l WHERE l.news_id=n.news_id) as likes, (SELECT COUNT(*) FROM likes as l WHERE l.news_id=n.news_id AND l.person_id=?) as liked, n.timestamp, n.banner_image FROM news as n WHERE n.institution_id=? ORDER BY n.news_id DESC`, 
+                `SELECT n.news_id, n.description, (SELECT COUNT(*) FROM likes as l WHERE l.news_id=n.news_id) as likes, (SELECT COUNT(*) FROM likes as l WHERE l.news_id=n.news_id AND l.person_id=?) as liked, n.timestamp, n.banner_image, i.institution_id, i.avatar_image, u.name FROM news as n JOIN institutions as i USING(institution_id) JOIN users as u USING(user_id) WHERE n.institution_id IN (?) ORDER BY n.news_id DESC`, 
                 [person_id,institutionIds]
             );
     
@@ -74,6 +81,11 @@ router.get('/home', validToken, isAccepted(role), isEnabled(role), getRoleFromTo
                 liked: Boolean(news.liked),
                 formatted_datetime: dynamicsDateTime(news.timestamp),
                 banner_image: news.banner_image,
+                institution:{
+                    institution_id: news.institution_id,
+                    avatar_image: news.avatar_image,
+                    name: news.name,
+                }
             }));
         }
        
@@ -116,7 +128,8 @@ router.get('/events',  validToken, isAccepted(role), isEnabled(role), getRoleFro
         
         // A követett intézmények eseményeinek lekérdezése
         if(institutionIds.length){
-            const [rawEvents] = await pool.query(`SELECT * FROM events WHERE institution_id IN (?) ORDER BY event_start ASC`, [institutionIds]);
+            // akkor sincs gond, ha 3 alatti mennyiségű esemény van
+            const [rawEvents] = await pool.query(`SELECT e.event_id, e.event_start, e.event_end, e.title, e.location, e.description, e.institution_id, e.banner_image as cover_image, i.institution_id, i.avatar_image, i.banner_image FROM events as e JOIN institutions as i USING(institution_id) JOIN users as u USING(user_id)  WHERE e.institution_id IN (?) ORDER BY e.event_start ASC `, [institutionIds]);
         
             for (const event of rawEvents) {
                 // Egy eseményhez tartozó linkek lekérdezése
@@ -128,18 +141,28 @@ router.get('/events',  validToken, isAccepted(role), isEnabled(role), getRoleFro
                     title: event.title,
                     location: event.location,
                     description: event.description,
-                    banner_image: event.banner_image,
+                    banner_image: event.cover_image,
                     month: getMonthAsText(event.event_start),
                     day: getDay(event.event_start),
                     time: getFormatTime(event.event_start, event.event_end),
+                    start:event.event_start,
+                    end:event.event_end,
                     links: eventLinks.map(link => ({
                         link_id: link.event_link_id,
                         title: link.title,
                         link: link.link
-                    }))
+                    })),
+                    institution:{
+                        institution_id: event.institution_id,
+                        avatar_image: event.avatar_image,
+                        banner_image: event.banner_image,
+                    }
                 });
             }
+
+            
         }
+        
         res.status(200).json({
             code: 200,
             message: "sikeres adatlekérés",
@@ -333,6 +356,8 @@ router.get('/institutions/:institution_id',validToken, isAccepted(role), isEnabl
                 month: getMonthAsText(event.event_start),
                 day: getDay(event.event_start),
                 time: getFormatTime(event.event_start,event.event_end),
+                start:event.event_start,
+                end:event.event_end,
                 links: eventLinks.map(link => ({
                     link_id: link.event_link_id,
                     title: link.title,
@@ -364,7 +389,7 @@ router.get('/institutions/:institution_id',validToken, isAccepted(role), isEnabl
             message: "Sikeres adatlekérés",
             errors: [],
             data: {
-                institution_id: institution_id,
+                institution_id: parseInt(institution_id),
                 name: institutions[0].name,
                 avatar_image: institutions[0].avatar_image,
                 banner_image: institutions[0].banner_image,
@@ -408,7 +433,7 @@ router.post('/follow/:institution_id',validToken, isAccepted(role), isEnabled(ro
         }
 
         // ellenőrízni nem kell, hogy jó-e, a megadott id, mert le se futna az sql, cascase kapcsolat!!
-        await pool.query(`INSERT INTO following (institution_id, person_id) VALUES (?, ?) `, [institution_id, person_id]);
+        await pool.query(`INSERT INTO following (institution_id, person_id) VALUES (?, ?) `, [parseInt(institution_id), person_id]);
 
         // követések száma
         const [[{follower_count}]]=await pool.query(`SELECT COUNT(*) AS follower_count FROM following WHERE institution_id = ?`, [institution_id]);
@@ -507,6 +532,26 @@ router.get('/profile',validToken, isAccepted(role), isEnabled(role), getRoleFrom
     }
 });
 
+router.get('/enabled', validToken, isEnabled(role), getRoleFromToken, verifyRole(role), async (req, res)=>{
+    // #swagger.tags = ['institution']
+    res.status(200).json({
+        code: 200,
+        message: "A fiók enedéléyezve van",
+        errors: [],
+        data: null,
+    });
+});
+
+router.get('/accepted', validToken, isAccepted(role), getRoleFromToken, verifyRole(role), async (req, res)=>{
+    // #swagger.tags = ['institution']
+    res.status(200).json({
+        code: 200,
+        message: "A fiók jóváhagyásra került",
+        errors: [],
+        data: null,
+    });
+});
+
 router.put('/avatar',validToken, isAccepted(role), isEnabled(role), getRoleFromToken, verifyRole(role), upload.single('avatar_image'), multerErrorHandler,  async (req, res)=>{
     // #swagger.tags = ['person']
     try {
@@ -526,7 +571,7 @@ router.put('/avatar',validToken, isAccepted(role), isEnabled(role), getRoleFromT
         await pool.query('UPDATE person SET avatar_image = ? WHERE user_id = ?', [avatar_image, user_id]);
 
         // ha nem null értékű az régi kép, akk azt töröljük
-        if(old_avatar_image!==null && old_avatar_image!=="default_avatar.jpg"){
+        if(old_avatar_image && old_avatar_image!=="default_avatar.jpg"){
             const filePath = path.join(__dirname, '..','uploads', old_avatar_image);
             await fs.unlink(filePath);
         }
@@ -666,7 +711,20 @@ router.delete('/profile',validToken, isAccepted(role), isEnabled(role), getRoleF
     // #swagger.tags = ['person']
     try {
         const user_id=req.user_id;
+        const [result] = await pool.query(
+            `SELECT p.avatar_image FROM person as p WHERE p.user_id=? AND p.avatar_image <> "default_avatar.jpg"`, [user_id]
+        );
         await pool.query(`DELETE FROM users WHERE user_id = ?`, [user_id]);
+        if(result.length===1){
+            const image = result[0].avatar_image;
+            const filePath = path.join(__dirname, '..', 'uploads', image);
+            try {
+                await fs.unlink(filePath);
+                console.log(`Törölve: ${filePath}`);
+            } catch (err) {
+                console.error(`Nem sikerült törölni: ${filePath} - Hiba: ${err.message}`);
+            }
+        }
         res.status(200).json({
             code: 200,
             message: "Sikeres fióktörlés",
@@ -709,7 +767,7 @@ router.get('/messages_version',validToken, isAccepted(role), isEnabled(role), ge
             data: null
         });
     }
-});
+});0
 
 router.get('/messaging_rooms',validToken, isAccepted(role), isEnabled(role), getRoleFromToken, verifyRole(role), async (req, res)=>{
     // #swagger.tags = ['person']
@@ -905,7 +963,72 @@ router.get('/messaging_rooms/:messaging_room_id',validToken, isAccepted(role), i
             message: "Sikeres adatlekérés",
             errors: [],
             data: {
-                messaging_room_id: messaging_room_id,
+                messaging_room_id: parseInt(messaging_room_id),
+                institution: institution,
+                messages: messages,
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({
+            code: 500,
+            message: error.message || "Szerverhiba",
+            errors: [],
+            data: null
+        });
+    }
+});
+
+router.get('/find_messaging_rooms/:institution_id',validToken, isAccepted(role), isEnabled(role), getRoleFromToken, verifyRole(role), async (req, res)=>{
+    // #swagger.tags = ['person']
+    try {
+        const user_id=req.user_id;
+        const insttutionId=req.params.institution_id;
+        
+        if(!insttutionId){
+            throw new Error('Hibás bemeneti adat');
+        }
+
+        const [[{person_id}]]=await pool.query('SELECT person_id FROM person WHERE user_id=?', [user_id]);
+
+        // lekérjük, az összes beszélgetését a beszélegtésszobának, amennyiben olyan felhasználó hivja le, aki benne van a beszélgetésben
+        //;
+        const [messaging_room]= await pool.query(`SELECT * FROM messaging_rooms as m WHERE m.institution_id=? AND m.person_id=?`, [insttutionId, person_id]);
+        
+        let messaging_room_id=-1;
+        if(!messaging_room.length){
+            // készítünk egyet  
+            const [{insertId}] = await pool.query(`INSERT INTO messaging_rooms (person_id, institution_id) VALUES (?, ?)`, [person_id, insttutionId])
+            console.log(insertId);
+            
+            messaging_room_id=insertId;
+        }else{
+            messaging_room_id= messaging_room[0].messaging_room_id;
+        }
+
+        const [raw_messages]= await pool.query(`SELECT * FROM messages JOIN messaging_rooms as m USING(messaging_room_id) WHERE m.institution_id=? AND m.person_id=? ORDER BY message_id DESC`, [insttutionId, person_id]);
+        const messages=raw_messages.map(element=>({
+            message_id: element.message_id,
+            message: element.message,
+            formatted_date: dynamicsDateTime(element.timestamp),
+            from_person: Boolean(element.from_person)
+        }));
+
+        
+        const [[institution]] = await pool.query(
+            `SELECT institution_id, avatar_image, name 
+             FROM institutions 
+             JOIN users USING(user_id) 
+             WHERE institution_id = ?`,
+            [parseInt(insttutionId)]
+        );
+
+        res.status(200).json({
+            code: 200,
+            message: "Sikeres adatlekérés",
+            errors: [],
+            data: {
+                messaging_room_id: parseInt(messaging_room_id),
                 institution: institution,
                 messages: messages,
             }
